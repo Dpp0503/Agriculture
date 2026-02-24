@@ -28,16 +28,35 @@ warnings.filterwarnings('ignore')
 np.random.seed(42)
 torch.manual_seed(42)
 
+import math
+
 # --- 1. Deep Learning Models ---
+
+# Positional Encoding for Transformer
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=100):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1).float()
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0))  # (1, max_len, d_model)
+
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1), :]
+
+# Bidirectional LSTM
 class RiceLSTM(nn.Module):
     def __init__(self, input_dim, hidden_dim=64, num_layers=2):
         super(RiceLSTM, self).__init__()
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.2)
-        self.fc = nn.Linear(hidden_dim, 1)
-    
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers,
+                            batch_first=True, dropout=0.2, bidirectional=True)
+        self.fc = nn.Linear(hidden_dim * 2, 1)  # *2 for bidirectional
+
     def forward(self, x):
         out, _ = self.lstm(x)
-        out = out[:, -1, :]
+        out = out[:, -1, :]  # Last time step, both directions concatenated
         return self.fc(out)
 
 class RiceCNN1D(nn.Module):
@@ -45,73 +64,126 @@ class RiceCNN1D(nn.Module):
         super(RiceCNN1D, self).__init__()
         self.conv1 = nn.Conv1d(input_dim, 64, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
-        self.pool = nn.AdaptiveMaxPool1d(1)
-        self.fc = nn.Linear(128, 1)
-        self.relu = nn.ReLU()
-    
+        self.pool  = nn.AdaptiveMaxPool1d(1)
+        self.fc    = nn.Linear(128, 1)
+        self.relu  = nn.ReLU()
+        self.drop  = nn.Dropout(0.2)
+
     def forward(self, x):
         x = x.permute(0, 2, 1)
-        x = self.relu(self.conv1(x))
-        x = self.relu(self.conv2(x))
+        x = self.drop(self.relu(self.conv1(x)))
+        x = self.drop(self.relu(self.conv2(x)))
         x = self.pool(x).squeeze(-1)
         return self.fc(x)
+
 class RiceTransformer(nn.Module):
     def __init__(self, input_dim, seq_len):
         super(RiceTransformer, self).__init__()
         self.embedding = nn.Linear(input_dim, 32)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=32, nhead=4, batch_first=True, dropout=0.1)
+        self.pos_enc   = PositionalEncoding(d_model=32, max_len=seq_len + 1)
+        encoder_layer  = nn.TransformerEncoderLayer(d_model=32, nhead=4,
+                                                    batch_first=True, dropout=0.1,
+                                                    dim_feedforward=128)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
-        self.fc = nn.Linear(32 * seq_len, 1)
+        self.pool = nn.AdaptiveAvgPool1d(1)  # Pool over time dim instead of flatten
+        self.fc   = nn.Linear(32, 1)
 
     def forward(self, x):
-        x = self.embedding(x)
-        x = self.transformer(x)
-        x = x.reshape(x.size(0), -1)
+        x = self.embedding(x)          # (B, T, 32)
+        x = self.pos_enc(x)            # Add positional info
+        x = self.transformer(x)        # (B, T, 32)
+        x = self.pool(x.permute(0, 2, 1)).squeeze(-1)  # (B, 32)
         return self.fc(x)
 
-def train_dl_model(model, X_train, y_train, X_test, y_test, epochs=50, batch_size=32, lr=0.001):
+# ------------------------------------------------------------------------
+# Improved training: early stopping + LR scheduler + two-phase fine-tuning
+# ------------------------------------------------------------------------
+def train_dl_model(model, X_train, y_train, X_test, y_test,
+                   epochs=150, batch_size=32, lr=0.001,
+                   patience=15, finetune_on_real=True,
+                   X_real=None, y_real=None):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
-    
-    # Scale Data
+    model  = model.to(device)
+
+    # --- Scale ---
     scaler = StandardScaler()
-    # Flatten for scaling, reshape back
     n, seq, feat = X_train.shape
-    X_train_flat = X_train.reshape(-1, feat)
-    X_test_flat = X_test.reshape(-1, feat)
-    
-    # Fit on train, transform both
-    # Note: Strictly speaking, we should scale per feature across time, 
-    # but global scaling is acceptable for this magnitude range.
-    X_train_scaled = scaler.fit_transform(X_train_flat).reshape(n, seq, feat)
-    X_test_scaled = scaler.transform(X_test_flat).reshape(X_test.shape[0], seq, feat)
-    
-    # Convert to Tensor
-    Xt = torch.FloatTensor(X_train_scaled).to(device)
-    yt = torch.FloatTensor(y_train).view(-1, 1).to(device)
-    Xv = torch.FloatTensor(X_test_scaled).to(device)
-    yv = torch.FloatTensor(y_test).view(-1, 1).to(device)
-    
-    dataset = TensorDataset(Xt, yt)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    
-    model.train()
-    for epoch in range(epochs):
-        for X_batch, y_batch in loader:
-            optimizer.zero_grad()
-            out = model(X_batch)
-            loss = criterion(out, y_batch)
-            loss.backward()
-            optimizer.step()
-            
+    X_train_scaled = scaler.fit_transform(X_train.reshape(-1, feat)).reshape(n, seq, feat)
+    X_test_scaled  = scaler.transform(X_test.reshape(-1, feat)).reshape(X_test.shape[0], seq, feat)
+
+    def _make_tensors(X, y):
+        return (torch.FloatTensor(X).to(device),
+                torch.FloatTensor(y).view(-1, 1).to(device))
+
+    # Internal val split (10% of train) for early stopping
+    val_size = max(1, int(0.1 * n))
+    X_tr, X_val = X_train_scaled[val_size:], X_train_scaled[:val_size]
+    y_tr, y_val = y_train[val_size:],        y_train[:val_size]
+
+    Xt, yt = _make_tensors(X_tr, y_tr)
+    Xval, yval = _make_tensors(X_val, y_val)
+    Xv_full, _ = _make_tensors(X_test_scaled, y_test)
+
+    def _run_training(model, Xt, yt, Xval, yval, epochs, lr, patience):
+        loader    = DataLoader(TensorDataset(Xt, yt), batch_size=batch_size, shuffle=True)
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
+        best_val, patience_count, best_state = float('inf'), 0, None
+
+        for epoch in range(epochs):
+            # --- Train ---
+            model.train()
+            for X_batch, y_batch in loader:
+                optimizer.zero_grad()
+                loss = criterion(model(X_batch), y_batch)
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+            # --- Val ---
+            model.eval()
+            with torch.no_grad():
+                val_loss = criterion(model(Xval), yval).item()
+            scheduler.step(val_loss)
+
+            # --- Early stopping ---
+            if val_loss < best_val - 1e-5:
+                best_val, patience_count = val_loss, 0
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            else:
+                patience_count += 1
+                if patience_count >= patience:
+                    break
+
+        if best_state:
+            model.load_state_dict(best_state)
+        return model
+
+    # --- Phase 1: Train on full train set (real + synthetic) ---
+    model = _run_training(model, Xt, yt, Xval, yval, epochs, lr, patience)
+
+    # --- Phase 2: Fine-tune on real data only (if provided) ---
+    if finetune_on_real and X_real is not None and len(X_real) > 1:
+        X_real_scaled = scaler.transform(X_real.reshape(-1, feat)).reshape(len(X_real), seq, feat)
+        Xr, yr = _make_tensors(X_real_scaled, y_real)
+        # Fine-tune with very low LR, short run, no split needed (few samples)
+        ft_loader = DataLoader(TensorDataset(Xr, yr), batch_size=max(4, len(X_real)//4), shuffle=True)
+        ft_opt    = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-4)
+        criterion = nn.MSELoss()
+        model.train()
+        for _ in range(30):
+            for Xb, yb in ft_loader:
+                ft_opt.zero_grad()
+                criterion(model(Xb), yb).backward()
+                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                ft_opt.step()
+
+    # --- Final prediction ---
     model.eval()
     with torch.no_grad():
-        pred_tensor = model(Xv)
-        pred = pred_tensor.cpu().numpy().flatten()
-    
+        pred = model(Xv_full).cpu().numpy().flatten()
+
     return model, pred
 
 # --- 2. Data Processing ---
@@ -309,6 +381,12 @@ def train_and_select_best(df_tab, X_seq, output_model="final_best_model.joblib")
     best_name = ""
     results = []
 
+    # Extract real-only training sequences for Phase 2 fine-tuning
+    train_real_mask = is_syn[train_idx] == 0
+    X_real_train = X_seq_train[train_real_mask]
+    y_real_train = y_train[train_real_mask]
+    print(f"  Real train samples for fine-tuning: {len(X_real_train)}")
+
     # --- Model 1: Random Forest ---
     print("\nTraining Random Forest...")
     rf = RandomForestRegressor(n_estimators=300, max_depth=20, min_samples_leaf=2, random_state=42, n_jobs=-1)
@@ -343,7 +421,8 @@ def train_and_select_best(df_tab, X_seq, output_model="final_best_model.joblib")
     print("\nTraining LSTM...")
     input_dim = X_seq.shape[2]
     lstm = RiceLSTM(input_dim)
-    lstm, y_pred_lstm = train_dl_model(lstm, X_seq_train, y_train, X_seq_test, y_test)
+    lstm, y_pred_lstm = train_dl_model(lstm, X_seq_train, y_train, X_seq_test, y_test,
+                                        X_real=X_real_train, y_real=y_real_train)
     r2_lstm, mae_lstm = evaluate_predictions(y_test[real_mask], y_pred_lstm[real_mask], "LSTM")
     print(f"  LSTM Real Data R²: {r2_lstm:.4f} (MAE: {mae_lstm:.4f})")
     
@@ -356,7 +435,8 @@ def train_and_select_best(df_tab, X_seq, output_model="final_best_model.joblib")
     # --- Model 4: 1D-CNN ---
     print("\nTraining 1D-CNN...")
     cnn = RiceCNN1D(input_dim, seq_len=X_seq.shape[1])
-    cnn, y_pred_cnn = train_dl_model(cnn, X_seq_train, y_train, X_seq_test, y_test)
+    cnn, y_pred_cnn = train_dl_model(cnn, X_seq_train, y_train, X_seq_test, y_test,
+                                      finetune_on_real=False)  # CNN unstable with tiny fine-tune batches
     r2_cnn, mae_cnn = evaluate_predictions(y_test[real_mask], y_pred_cnn[real_mask], "1D-CNN")
     print(f"  CNN Real Data R²: {r2_cnn:.4f} (MAE: {mae_cnn:.4f})")
     
@@ -369,7 +449,8 @@ def train_and_select_best(df_tab, X_seq, output_model="final_best_model.joblib")
     # --- Model 5: Transformer ---
     print("\nTraining Transformer...")
     transformer = RiceTransformer(input_dim, seq_len=X_seq.shape[1])
-    transformer, y_pred_trans = train_dl_model(transformer, X_seq_train, y_train, X_seq_test, y_test)
+    transformer, y_pred_trans = train_dl_model(transformer, X_seq_train, y_train, X_seq_test, y_test,
+                                                X_real=X_real_train, y_real=y_real_train)
     r2_trans, mae_trans = evaluate_predictions(y_test[real_mask], y_pred_trans[real_mask], "Transformer")
     print(f"  Transformer Real Data R\u00b2: {r2_trans:.4f} (MAE: {mae_trans:.4f})")
 
@@ -379,7 +460,7 @@ def train_and_select_best(df_tab, X_seq, output_model="final_best_model.joblib")
         best_name = "Transformer"
     results.append({"Model": "Transformer", "R2": r2_trans, "MAE": mae_trans})
 
-    print(f"\n\U0001f3c6 WINNER: {best_name} with R\u00b2 {best_score:.4f} on Real Data")
+    print(f"\n*** WINNER: {best_name} with R2 {best_score:.4f} on Real Data ***")
     
     # Save Model
     if "Random Forest" in best_name or "XGBoost" in best_name:

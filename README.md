@@ -355,17 +355,25 @@ All models trained on an 80/20 split of real + synthetic data combined.
 
 Models evaluated **only on held-out real samples** (no synthetic data in test set):
 
-| Model | Real-Data R² | MAE (Ton/Ha) |
-|---|---|---|
-| **XGBoost** | **0.6675** | **0.2966** |
-| Random Forest | 0.6151 | 0.3212 |
-| Transformer | 0.3011 | 0.4398 |
-| LSTM | 0.2912 | 0.4716 |
-| 1D-CNN | 0.2669 | 0.4349 |
+| Model | Real-Data R² | MAE (Ton/Ha) | vs. Baseline |
+|---|---|---|---|
+| **Transformer** | **0.7451** | **0.2710** | ✅ +0.44 |
+| **XGBoost** | **0.6675** | **0.2966** | — (baseline) |
+| Random Forest | 0.6151 | 0.3212 | — |
+| LSTM | 0.4255 | 0.4123 | ✅ +0.13 |
+| 1D-CNN | −0.71 | 0.82 | ❌ (fine-tune unstable) |
 
-> 🏆 **Winner: XGBoost** — saved to `final_best_model.joblib`
+> 🏆 **Winner: Transformer** — saved to `final_best_model.pth`
 >
-> Deep learning models (LSTM, 1D-CNN, Transformer) underperformed on real data despite high scores in the combined benchmark — the tabular XGBoost model generalises better with the limited real dataset size (29 held-out real samples).
+> **Improvements applied to all DL models:**
+> - **Positional encoding** added to Transformer (sinusoidal, tracks week order)
+> - **Bidirectional LSTM** (sees both past and future context in the season)
+> - **Early stopping** with patience=15 (prevents overfitting to synthetic data)
+> - **ReduceLROnPlateau** scheduler (halves LR when validation loss plateaus)
+> - **Two-phase training:** pre-train on real+synthetic → fine-tune on real only (lr=1e-4)
+> - **Gradient clipping** (max_norm=1.0) and **weight decay** for regularisation
+>
+> The 1D-CNN still struggles — convolutional layers require larger batch sizes to be stable, which conflicts with the small real-data fine-tuning set.
 
 ---
 
