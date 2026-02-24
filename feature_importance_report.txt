@@ -1,0 +1,11 @@
+Top 10 Feature Importances:
+Vegetative_Heat_Stress_Weeks: 0.4425
+Vegetative_Heat_x_Humidity: 0.3914
+Germination_Mean_Temp: 0.0225
+Vegetative_Night_Stress_Weeks: 0.0138
+Germination_Heat_x_Humidity: 0.0117
+Germination_Rainfall_Total: 0.0101
+Reproductive_Mean_Solar: 0.0094
+Ripening_Mean_Humidity: 0.0087
+Germination_Night_Stress_Weeks: 0.0084
+Germination_Max_Weekly_Rain: 0.0071

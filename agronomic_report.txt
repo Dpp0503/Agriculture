@@ -1,0 +1,7 @@
+Correlations with Yield (Ton./Ha.):
+Vegetative_Heat_Stress_Weeks: -0.8060
+Vegetative_Heat_x_Humidity: -0.8034
+Ripening_Rainfall_Total: 0.0560
+Ripening_Rainy_Weeks: -0.2271
+Reproductive_Mean_Solar: 0.5214
+Germination_Mean_Temp: -0.5715
