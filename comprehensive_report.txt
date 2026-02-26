@@ -1,5 +1,4 @@
 Model Comparison Results:
-Random Forest: 0.9865
 RNN: 0.8086
 LSTM: 0.8972
 CNN: 0.9172

@@ -3,7 +3,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, r2_score
 import torch
@@ -213,12 +212,7 @@ def load_and_prep_data():
 
 # --- TWO: Models ---
 
-# 1. Random Forest (Tabular)
-def train_rf(X_train, y_train, X_test, y_test):
-    rf = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-    rf.fit(X_train, y_train)
-    pred = rf.predict(X_test)
-    return r2_score(y_test, pred), pred
+
 
 # 2. Deep Learning Wrappers
 class RiceRNN(nn.Module):
@@ -336,12 +330,7 @@ def main():
     results = {}
     predictions = {}
     
-    # 1. Random Forest
-    print("\n--- 1. Random Forest (Tabular) ---")
-    r2_rf, pred_rf = train_rf(X_tab[idx_train], y[idx_train], X_tab[idx_test], y[idx_test])
-    results['Random Forest'] = r2_rf
-    predictions['Random Forest'] = pred_rf
-    print(f"RF R2: {r2_rf:.4f}")
+
     
     # DL Params
     input_dim = X_seq.shape[2]
@@ -384,21 +373,20 @@ def main():
     plt.savefig('d:/Rice/comprehensive_model_comparison.png')
     plt.close()
     
-    # Scatter Plot of Best DL vs RF
+    # Scatter Plot of Best DL vs Actual
     # Find best DL
-    dl_scores = {k:v for k,v in results.items() if k != 'Random Forest'}
+    dl_scores = {k:v for k,v in results.items()}
     best_dl_name = max(dl_scores, key=dl_scores.get)
     best_dl_pred = predictions[best_dl_name]
     
     plt.figure(figsize=(8, 8))
-    plt.scatter(y_test, pred_rf, alpha=0.6, label=f'Random Forest ($R^2={r2_rf:.2f}$)', color='blue')
     plt.scatter(y_test, best_dl_pred, alpha=0.6, label=f'{best_dl_name} ($R^2={results[best_dl_name]:.2f}$)', color='green', marker='x')
     plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--')
     plt.xlabel('Actual Yield')
     plt.ylabel('Predicted Yield')
-    plt.title(f'Actual vs Predicted: RF vs Best DL ({best_dl_name})')
+    plt.title(f'Actual vs Predicted: Best DL ({best_dl_name})')
     plt.legend()
-    plt.savefig('d:/Rice/rf_vs_best_dl.png')
+    plt.savefig('d:/Rice/best_dl_vs_actual.png')
     plt.close()
     
     # Save Report
